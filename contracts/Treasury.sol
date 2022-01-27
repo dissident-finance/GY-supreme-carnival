@@ -239,6 +239,118 @@ contract DissidentTreasury is DissidentAccessControlled, ITreasury {
         emit RepayDebt(msg.sender, _token, _amount, value);
     }
 
+    /**
+     * @notice allow approved address to repay borrowed reserves with DIST
+     * @param _amount uint256
+     */
+    function repayDebtWithDIST(uint256 _amount) external {
+        require(
+            permissions[STATUS.RESERVEDEBTOR][msg.sender] || permissions[STATUS.DISTDEBTOR][msg.sender],
+            notApproved
+        );
+        DIST.burnFrom(msg.sender, _amount);
+        sDIST.changeDebt(_amount, msg.sender, false);
+        totalDebt = totalDebt.sub(_amount);
+        distDebt = distDebt.sub(_amount);
+        emit RepayDebt(msg.sender, address(DIST), _amount, _amount);
+    }
+
+     /* ========== MANAGERIAL FUNCTIONS ========== */
+
+    /**
+     * @notice takes inventory of all tracked assets
+     * @notice always consolidate to recognized reserves before audit
+     */
+    function auditReserves() external onlyGovernor {
+        uint256 reserves;
+        address[] memory reserveToken = registry[STATUS.RESERVETOKEN];
+        for (uint256 i = 0; i < reserveToken.length; i++) {
+            if (permissions[STATUS.RESERVETOKEN][reserveToken[i]]) {
+                reserves = reserves.add(tokenValue(reserveToken[i], IERC20(reserveToken[i]).balanceOf(address(this))));
+            }
+        }
+        address[] memory liquidityToken = registry[STATUS.LIQUIDITYTOKEN];
+        for (uint256 i = 0; i < liquidityToken.length; i++) {
+            if (permissions[STATUS.LIQUIDITYTOKEN][liquidityToken[i]]) {
+                reserves = reserves.add(
+                    tokenValue(liquidityToken[i], IERC20(liquidityToken[i]).balanceOf(address(this)))
+                );
+            }
+        }
+        totalReserves = reserves;
+        emit ReservesAudited(reserves);
+    }
+
+    /**
+     * @notice set max debt for address
+     * @param _address address
+     * @param _limit uint256
+     */
+    function setDebtLimit(address _address, uint256 _limit) external onlyGovernor {
+        debtLimit[_address] = _limit;
+    }
+
+    /**
+     * @notice enable permission from queue
+     * @param _status STATUS
+     * @param _address address
+     * @param _calculator address
+     */
+    function enable(
+        STATUS _status,
+        address _address,
+        address _calculator
+    ) external onlyGovernor {
+        require(timelockEnabled == false, "Use queueTimelock");
+        if (_status == STATUS.SDIST) {
+            sDIST = IsDIST(_address);
+        } else {
+            permissions[_status][_address] = true;
+
+            if (_status == STATUS.LIQUIDITYTOKEN) {
+                bondCalculator[_address] = _calculator;
+            }
+
+            (bool registered, ) = indexInRegistry(_address, _status);
+            if (!registered) {
+                registry[_status].push(_address);
+
+                if (_status == STATUS.LIQUIDITYTOKEN || _status == STATUS.RESERVETOKEN) {
+                    (bool reg, uint256 index) = indexInRegistry(_address, _status);
+                    if (reg) {
+                        delete registry[_status][index];
+                    }
+                }
+            }
+        }
+        emit Permissioned(_address, _status, true);
+    }
+
+     /**
+     *  @notice disable permission from address
+     *  @param _status STATUS
+     *  @param _toDisable address
+     */
+    function disable(STATUS _status, address _toDisable) external {
+        require(msg.sender == authority.governor() || msg.sender == authority.guardian(), "Only governor or guardian");
+        permissions[_status][_toDisable] = false;
+        emit Permissioned(_toDisable, _status, false);
+    }
+
+    /**
+     * @notice check if registry contains address
+     * @return (bool, uint256)
+     */
+    function indexInRegistry(address _address, STATUS _status) public view returns (bool, uint256) {
+        address[] memory entries = registry[_status];
+        for (uint256 i = 0; i < entries.length; i++) {
+            if (_address == entries[i]) {
+                return (true, i);
+            }
+        }
+        return (false, 0);
+    }
+
 
 
 
